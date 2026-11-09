@@ -1,0 +1,19 @@
+schema_version = "1.0.0"
+
+id = "super_wakatime"
+version = "0.1.0"
+name = "Super-Wakatime"
+tagline = "Detailed Hackatime heartbeats with cursor and mouse positions"
+maintainer = "Hack Club"
+type = "add-on"
+website = "https://github.com/wally-hc/blender-super-wakatime"
+tags = ["System"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:MIT"]
+copyright = ["2026 Hack Club"]
+
+[permissions]
+network = "Download wakatime-cli and send heartbeats to Hackatime"
+files = "Read ~/.wakatime.cfg and run wakatime-cli"
