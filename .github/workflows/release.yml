@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      BLENDER_VERSION: 4.2.23
+      BLENDER_SHA256: bea0eb3146be13eae6225409a117b215184f41b7f79e799f97cb3abb8f6dc404
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag matches the manifest
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("blender_hackatime/blender_manifest.toml", "rb"))["version"])')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match manifest version $version"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: python3 -m unittest tests/test_core.py
+
+      - name: Download Blender
+        run: |
+          archive="blender-$BLENDER_VERSION-linux-x64.tar.xz"
+          curl -fsSL --retry 3 -o "$archive" "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/$archive"
+          echo "$BLENDER_SHA256  $archive" | sha256sum -c -
+          tar -xJf "$archive"
+          echo "BLENDER=$PWD/blender-$BLENDER_VERSION-linux-x64/blender" >> "$GITHUB_ENV"
+
+      - name: Build the extension
+        run: |
+          mkdir -p dist
+          "$BLENDER" --command extension validate blender_hackatime
+          "$BLENDER" --command extension build --source-dir blender_hackatime --output-dir dist
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.zip --title "$GITHUB_REF_NAME" --generate-notes

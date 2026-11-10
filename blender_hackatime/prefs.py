@@ -3,8 +3,8 @@ import bpy
 from . import cli, hooks
 
 
-class SUPERWAKATIME_OT_set_key(bpy.types.Operator):
-    bl_idname = "preferences.super_wakatime_set_key"
+class BLENDERHACKATIME_OT_set_key(bpy.types.Operator):
+    bl_idname = "preferences.blender_hackatime_set_key"
     bl_label = "Set Hackatime API Key"
     bl_options = {"INTERNAL"}
 
@@ -31,7 +31,7 @@ class SUPERWAKATIME_OT_set_key(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SuperWakatimePreferences(bpy.types.AddonPreferences):
+class BlenderHackatimePreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     def draw(self, context):
@@ -46,10 +46,10 @@ class SuperWakatimePreferences(bpy.types.AddonPreferences):
         column.label(text=f"wakatime-cli: {found}" if found else "wakatime-cli: not found, it will be downloaded")
         if sender is not None and sender.last_error:
             column.label(text=f"Last error: {sender.last_error}", icon="ERROR")
-        layout.operator(SUPERWAKATIME_OT_set_key.bl_idname, icon="KEYINGSET")
+        layout.operator(BLENDERHACKATIME_OT_set_key.bl_idname, icon="KEYINGSET")
 
 
-classes = (SUPERWAKATIME_OT_set_key, SuperWakatimePreferences)
+classes = (BLENDERHACKATIME_OT_set_key, BlenderHackatimePreferences)
 
 
 def register():

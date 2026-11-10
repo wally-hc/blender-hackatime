@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "super_wakatime"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "blender_hackatime"))
 
 import cli
 import core
@@ -102,13 +102,58 @@ class TrackerTest(unittest.TestCase):
         self.assertTrue(all(h["alternate_project"] == "car" for h in self.sent))
         self.assertEqual([h["is_write"] for h in self.sent], [False, False, False, True])
 
-    def test_loading_a_file_drops_the_queue(self):
+    def test_loading_a_file_sends_the_queue_as_unsaved(self):
         self.tracker.file_loaded("")
-        self.tracker.activity(scene())
+        self.tracker.activity(scene(7, 8))
+        queued_time = self.clock.now
+        self.tracker.activity(script(2, 3, 4))
+        self.tracker.activity(script(path=os.path.join(os.sep, "work", "tool.py"), inner=None))
+        self.clock.now += 50
         self.tracker.file_loaded(self.blend)
+        blend, inner, external = self.sent
+        self.assertEqual(blend["entity"], core.UNSAVED_BLEND)
+        self.assertTrue(blend["is_unsaved_entity"])
+        self.assertIsNone(blend["alternate_project"])
+        self.assertEqual((blend["lineno"], blend["cursorpos"], blend["time"]), (7, 8, queued_time))
+        self.assertEqual(inner["entity"], core.UNSAVED_BLEND + os.sep + "script.py")
+        self.assertTrue(inner["is_unsaved_entity"])
+        self.assertEqual(external["entity"], os.path.join(os.sep, "work", "tool.py"))
+        self.assertFalse(external["is_unsaved_entity"])
         self.tracker.touch()
         self.tracker.blend_saved(self.blend, scene())
+        self.assertEqual(len(self.sent), 4)
+        self.assertEqual(self.sent[3]["entity"], self.blend)
+
+    def test_closing_sends_the_queue_as_unsaved(self):
+        self.tracker.file_loaded("")
+        self.tracker.activity(scene())
+        self.tracker.close()
+        self.tracker.close()
+        self.assertEqual([h["entity"] for h in self.sent], [core.UNSAVED_BLEND])
+
+    def test_adopting_a_path_sends_the_queue_under_it(self):
+        self.tracker.file_loaded("")
+        self.tracker.activity(scene(3, 4))
+        self.tracker.adopt("")
+        self.assertEqual(self.sent, [])
+        self.tracker.adopt(self.blend)
+        self.tracker.adopt(os.path.join(os.sep, "other", "file.blend"))
+        self.assertEqual([(h["entity"], h["is_unsaved_entity"], h["is_write"]) for h in self.sent], [(self.blend, False, False)])
+        self.tracker.activity(scene(5, 6, "designing"))
+        self.assertEqual(self.sent[-1]["entity"], self.blend)
+
+    def test_closing_a_saved_file_sends_nothing(self):
+        self.tracker.activity(scene())
+        self.tracker.close()
         self.assertEqual(len(self.sent), 1)
+
+    def test_full_queue_sends_the_oldest_as_unsaved(self):
+        self.tracker.file_loaded("")
+        for index in range(core.MAX_PENDING + 2):
+            self.tracker.activity(scene(index, 0, "building" if index % 2 else "designing"))
+        self.assertEqual([h["lineno"] for h in self.sent], [0, 1])
+        self.assertTrue(all(h["is_unsaved_entity"] for h in self.sent))
+        self.assertEqual(len(self.tracker.pending), core.MAX_PENDING)
 
     def test_text_save_is_write(self):
         self.tracker.text_saved(script(2, 3, path="/work/tool.py", inner=None))
@@ -148,6 +193,27 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(args[args.index("--lines-in-file") + 1], "4")
         self.assertEqual(args[args.index("--language") + 1], "Python")
         self.assertEqual(args[args.index("--alternate-project") + 1], "b")
+
+    def test_cli_args_for_unsaved_blend(self):
+        heartbeat = core.resolve(scene(), "")
+        args = cli.heartbeat_args(heartbeat)
+        self.assertEqual(args[args.index("--entity") + 1], core.UNSAVED_BLEND)
+        self.assertTrue(os.path.isabs(core.UNSAVED_BLEND))
+        self.assertIn("--is-unsaved-entity", args)
+        self.assertNotIn("--alternate-project", args)
+        self.assertNotIn("alternate_project", cli.extra_heartbeat(heartbeat))
+
+    def test_config_update_keeps_other_lines(self):
+        text = "# mine\n[settings]\napi_key = old\ndebug = true\n\n[git]\nsubmodules_disabled = false\n"
+        updated = cli.update_settings(text, {"api_url": "https://example.test/api", "api_key": "new"})
+        self.assertEqual(
+            updated,
+            "# mine\n[settings]\napi_key = new\ndebug = true\napi_url = https://example.test/api\n\n[git]\nsubmodules_disabled = false\n",
+        )
+
+    def test_config_update_creates_settings(self):
+        self.assertEqual(cli.update_settings("", {"api_key": "k"}), "[settings]\napi_key = k\n")
+        self.assertEqual(cli.update_settings("[git]\na = b", {"api_key": "k"}), "[git]\na = b\n\n[settings]\napi_key = k\n")
 
 
 if __name__ == "__main__":

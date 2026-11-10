@@ -7,9 +7,9 @@ import traceback
 
 import bpy
 
-MODULE = os.environ.get("SUPER_WAKATIME_MODULE", "bl_ext.user_default.super_wakatime")
+MODULE = os.environ.get("BLENDER_HACKATIME_MODULE", "bl_ext.user_default.blender_hackatime")
 LOG = os.environ["FAKE_HACKATIME_LOG"]
-ROOT = os.environ.get("TEST_ROOT", "/tmp/bsw-background")
+ROOT = os.environ.get("TEST_ROOT", "/tmp/bh-background")
 
 hooks = importlib.import_module(MODULE + ".hooks")
 failures = []
@@ -80,7 +80,7 @@ def run():
     check("write is_write true", write.get("is_write") is True, write.get("is_write"))
     blender_version = ".".join(str(part) for part in bpy.app.version)
     agent = entries[0]["user_agent"] or ""
-    check("user agent", f"blender/{blender_version} blender-super-wakatime/0.1.0" in agent, agent)
+    check("user agent", f"blender/{blender_version} blender-hackatime/0.1.0" in agent, agent)
 
     external = bpy.data.texts.load(external_path)
     set_cursor(external, 3, 2)
@@ -111,6 +111,19 @@ def run():
     bpy.ops.wm.read_homefile(use_empty=True)
     check("loading resets to unsaved", hooks.state.tracker.blend_path == "" and hooks.state.tracker.pending == [], hooks.state.tracker.blend_path)
 
+    hooks.state.tracker.activity(hooks.core.Heartbeat("building", hooks.core.BLEND_LANGUAGE, 4001, 7, 0))
+    time.sleep(2)
+    check("unsaved activity is held back again", len(received()) == 4 and len(hooks.state.tracker.pending) == 1, str(len(received())))
+    bpy.ops.wm.read_homefile(use_empty=True)
+    entries = wait_for(5)
+    hb = entries[4]["heartbeat"] if len(entries) > 4 else {}
+    check("opening another file sends the queue as unsaved", hb.get("lineno") == 4001 and str(hb.get("entity", "")).endswith("untitled.blend"), str(hb))
+    check("unsaved heartbeat has no project", not hb.get("project"), str(hb.get("project")))
+    check("unsaved heartbeat keeps its fields", hb.get("category") == "building" and hb.get("language") == "Blender" and hb.get("lines") == 0 and hb.get("is_write") is False, str(hb))
+
+    hooks.state.tracker.activity(hooks.core.Heartbeat("designing", hooks.core.BLEND_LANGUAGE, 4002, 7, 0))
+    check("queued before quit", len(hooks.state.tracker.pending) == 1, str(len(hooks.state.tracker.pending)))
+
 
 try:
     run()
@@ -120,4 +133,3 @@ except Exception:
 
 print("RESULT " + ("FAIL " + ", ".join(failures) if failures else "OK"))
 sys.stdout.flush()
-os._exit(1 if failures else 0)

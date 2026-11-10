@@ -8,9 +8,9 @@ import traceback
 
 import bpy
 
-MODULE = os.environ.get("SUPER_WAKATIME_MODULE", "bl_ext.user_default.super_wakatime")
+MODULE = os.environ.get("BLENDER_HACKATIME_MODULE", "bl_ext.user_default.blender_hackatime")
 LOG = os.environ["FAKE_HACKATIME_LOG"]
-ROOT = os.environ.get("TEST_ROOT", "/tmp/bsw-gui")
+ROOT = os.environ.get("TEST_ROOT", "/tmp/bh-gui")
 LIFETIME = float(os.environ.get("LISTENER_LIFETIME", "3"))
 AUTOSAVE_WAIT = float(os.environ.get("AUTOSAVE_WAIT", "0"))
 
@@ -149,6 +149,19 @@ def steps():
     hb = got[4] if len(got) >= 5 else {}
     check("save over text editor writes the internal script", hb.get("is_write") is True and hb.get("entity") == blend + os.sep + "garden_tools.py" and hb.get("lineno") == 2, str(hb))
 
+    cube = bpy.context.view_layer.objects.active
+    if cube is not None:
+        name = cube.name
+        call(bpy.ops.ed.undo_push, message="before move")
+        cube.location.x = 5.0
+        call(bpy.ops.ed.undo_push, message="move")
+        simulate("MOUSEMOVE", "NOTHING", vx, vy)
+        window().event_simulate("Z", "PRESS", x=vx, y=vy, ctrl=True)
+        window().event_simulate("Z", "RELEASE", x=vx, y=vy, ctrl=True)
+        yield 1.0
+        moved = bpy.data.objects[name].location.x
+        check("ctrl+z still undoes with the listener running", abs(moved) < 1e-4, str(moved))
+
     if LIFETIME < 1000:
         hooks.LISTENER_LIFETIME = LIFETIME
         starts = []
@@ -173,6 +186,8 @@ def steps():
         prefs = bpy.context.preferences.filepaths
         prefs.use_auto_save_temporary_files = True
         prefs.auto_save_time = 1
+        call(bpy.ops.wm.save_mainfile)
+        yield 1.0
         started = time.time()
         bases = {os.path.dirname(bpy.app.tempdir.rstrip("/\\")), "/tmp", prefs.temporary_directory or "/tmp"}
         name = os.path.splitext(os.path.basename(bpy.data.filepath))[0] + "_*autosave.blend"
@@ -189,7 +204,38 @@ def steps():
         check("autosave ran" if LIFETIME < 1000 else "autosave blocked without restarts", bool(found) == (LIFETIME < 1000), str(found))
 
 
-gen = steps()
+def lifecycle_steps():
+    win = window()
+    vx, vy = center(area_of("VIEW_3D"))
+    count = len(received())
+    call(bpy.ops.preferences.addon_disable, module=MODULE)
+    yield 0.5
+    click(vx, vy)
+    yield 1.0
+    check("no heartbeat while disabled", len(received()) == count, str(len(received())))
+    call(bpy.ops.preferences.addon_enable, module=MODULE)
+    enabled = importlib.import_module(MODULE + ".hooks")
+    yield 1.5
+    check("listener back after re-enable", window().as_pointer() in enabled.state.listeners, str(enabled.state.listeners))
+    click(vx + 3, vy + 3)
+    yield from wait_count(count + 1)
+    check("heartbeat after re-enable", len(received()) == count + 1, str(len(received())))
+
+    call(bpy.ops.wm.read_homefile)
+    yield 2.0
+    loaded = importlib.import_module(MODULE + ".hooks")
+    qx, qy = center(area_of("VIEW_3D"))
+    click(qx, qy)
+    yield 1.0
+    check("unsaved click queued before quit", len(loaded.state.tracker.pending) == 1, str(loaded.state.tracker.pending))
+
+
+def all_steps():
+    yield from steps()
+    yield from lifecycle_steps()
+
+
+gen = all_steps()
 
 
 def tick():
@@ -202,7 +248,11 @@ def tick():
         failures.append("exception")
     print("RESULT " + ("FAIL " + ", ".join(failures) if failures else "OK"), flush=True)
     print("FACTS " + json.dumps(facts), flush=True)
-    os._exit(1 if failures else 0)
+    try:
+        call(bpy.ops.wm.quit_blender)
+    except Exception:
+        traceback.print_exc()
+        os._exit(1)
 
 
-bpy.app.timers.register(tick, first_interval=3.0)
+bpy.app.timers.register(tick, first_interval=3.0, persistent=True)

@@ -1,3 +1,4 @@
+import atexit
 import functools
 import os
 import time
@@ -18,7 +19,7 @@ IGNORED_KEYS = {
     "LEFT_ALT", "RIGHT_ALT", "LEFT_SHIFT", "RIGHT_SHIFT",
     "LEFT_CTRL", "RIGHT_CTRL", "OSKEY", "HYPER",
 }
-NON_KEY_MARKERS = ("MOUSE", "WHEEL", "TRACKPAD", "NDOF", "TIMER", "WINDOW", "ACTIONZONE", "XR_", "PEN", "NONE", "TEXTINPUT")
+NON_KEY_MARKERS = ("MOUSE", "WHEEL", "TRACKPAD", "NDOF", "TIMER", "WINDOW", "ACTIONZONE", "XR_", "PEN", "ERASER", "NONE", "TEXTINPUT")
 IGNORED_AREAS = {"PREFERENCES", "FILE_BROWSER", "INFO", "CONSOLE"}
 
 
@@ -33,7 +34,7 @@ def read_version():
 
 def user_agent():
     blender = ".".join(str(part) for part in bpy.app.version)
-    return f"blender/{blender} blender-super-wakatime/{read_version()}"
+    return f"blender/{blender} blender-hackatime/{read_version()}"
 
 
 class State:
@@ -42,6 +43,8 @@ class State:
         self.tracker = None
         self.generation = 0
         self.listeners = set()
+        self.timers = {}
+        self.logged = None
         self.scene_pointer = None
         self.text_under_pointer = None
         self.text_dirty = {}
@@ -49,6 +52,12 @@ class State:
 
 
 state = State()
+
+
+def report(message):
+    if message != state.logged:
+        state.logged = message
+        print(f"Blender Hackatime: {message}")
 
 
 def is_key(event):
@@ -141,9 +150,9 @@ def handle_event(window, event):
     state.tracker.activity(mouse_heartbeat(window, event.mouse_x, event.mouse_y, area))
 
 
-class SUPERWAKATIME_OT_listener(bpy.types.Operator):
-    bl_idname = "wm.super_wakatime_listener"
-    bl_label = "Super-Wakatime Listener"
+class BLENDERHACKATIME_OT_listener(bpy.types.Operator):
+    bl_idname = "wm.blender_hackatime_listener"
+    bl_label = "Blender Hackatime Listener"
     bl_options = {"INTERNAL"}
 
     def invoke(self, context, event):
@@ -153,16 +162,13 @@ class SUPERWAKATIME_OT_listener(bpy.types.Operator):
         self.window_key = window.as_pointer()
         self.generation = state.generation
         self.started = time.monotonic()
-        self.timer = context.window_manager.event_timer_add(LISTENER_LIFETIME, window=window)
+        if self.window_key not in state.timers:
+            state.timers[self.window_key] = context.window_manager.event_timer_add(LISTENER_LIFETIME, window=window)
         context.window_manager.modal_handler_add(self)
         state.listeners.add(self.window_key)
         return {"RUNNING_MODAL"}
 
     def finish(self, context):
-        try:
-            context.window_manager.event_timer_remove(self.timer)
-        except Exception:
-            pass
         if self.generation == state.generation:
             state.listeners.discard(self.window_key)
         return {"CANCELLED", "PASS_THROUGH"}
@@ -174,7 +180,7 @@ class SUPERWAKATIME_OT_listener(bpy.types.Operator):
             if context.window is not None:
                 handle_event(context.window, event)
         except Exception as exc:
-            print(f"Super-Wakatime: {exc}")
+            report(str(exc))
         if time.monotonic() - self.started >= LISTENER_LIFETIME:
             return self.finish(context)
         return {"PASS_THROUGH"}
@@ -183,14 +189,16 @@ class SUPERWAKATIME_OT_listener(bpy.types.Operator):
 def start_listeners():
     windows = {window.as_pointer(): window for window in bpy.context.window_manager.windows}
     state.listeners &= set(windows)
+    for key in set(state.timers) - set(windows):
+        del state.timers[key]
     for key, window in windows.items():
         if key in state.listeners:
             continue
         try:
             with bpy.context.temp_override(window=window, screen=window.screen):
-                bpy.ops.wm.super_wakatime_listener("INVOKE_DEFAULT")
+                bpy.ops.wm.blender_hackatime_listener("INVOKE_DEFAULT")
         except Exception as exc:
-            print(f"Super-Wakatime: could not start listener: {exc}")
+            report(f"could not start listener: {exc}")
 
 
 def poll_texts():
@@ -215,10 +223,11 @@ def watch():
     if state.tracker is None:
         return None
     try:
+        state.tracker.adopt(bpy.data.filepath)
         start_listeners()
         poll_texts()
     except Exception as exc:
-        print(f"Super-Wakatime: {exc}")
+        report(str(exc))
     return WATCH_INTERVAL
 
 
@@ -243,6 +252,7 @@ def on_load_post(*args):
         return
     state.generation += 1
     state.listeners.clear()
+    state.timers.clear()
     state.scene_pointer = None
     state.text_under_pointer = None
     state.text_dirty.clear()
@@ -257,17 +267,38 @@ def current_blend():
         return ""
 
 
+def remove_timers():
+    try:
+        manager = bpy.context.window_manager
+        for timer in state.timers.values():
+            manager.event_timer_remove(timer)
+    except Exception:
+        pass
+    state.timers.clear()
+
+
+def shutdown():
+    if state.tracker is not None:
+        state.tracker.close()
+        state.tracker = None
+    if state.sender is not None:
+        state.sender.stop()
+        state.sender = None
+
+
 def register():
     state.sender = cli.Sender(user_agent())
     state.tracker = core.Tracker(state.sender.submit)
     state.tracker.file_loaded(current_blend())
     state.generation += 1
     state.listeners.clear()
-    bpy.utils.register_class(SUPERWAKATIME_OT_listener)
+    bpy.utils.register_class(BLENDERHACKATIME_OT_listener)
     bpy.app.handlers.save_post.append(on_save_post)
     bpy.app.handlers.load_post.append(on_load_post)
     bpy.app.timers.register(watch, first_interval=WATCH_INTERVAL, persistent=True)
-    state.sender.prepare()
+    atexit.register(shutdown)
+    if not bpy.app.background:
+        state.sender.prepare()
 
 
 def unregister():
@@ -276,10 +307,9 @@ def unregister():
     for handlers, handler in ((bpy.app.handlers.save_post, on_save_post), (bpy.app.handlers.load_post, on_load_post)):
         if handler in handlers:
             handlers.remove(handler)
+    atexit.unregister(shutdown)
     state.generation += 1
     state.listeners.clear()
-    state.tracker = None
-    if state.sender is not None:
-        state.sender.stop()
-        state.sender = None
-    bpy.utils.unregister_class(SUPERWAKATIME_OT_listener)
+    shutdown()
+    bpy.utils.unregister_class(BLENDERHACKATIME_OT_listener)
+    remove_timers()

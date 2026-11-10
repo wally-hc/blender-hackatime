@@ -8,6 +8,7 @@ MAX_PENDING = 1000
 LINE_BASE = 1
 FLIP_MOUSE_Y = True
 BLEND_LANGUAGE = "Blender"
+UNSAVED_BLEND = os.path.join(os.path.expanduser("~"), "untitled.blend")
 
 DESIGNING_EDITORS = {
     "IMAGE_EDITOR",
@@ -75,14 +76,16 @@ class Heartbeat:
 
 
 def resolve(heartbeat, blend_path):
+    base = blend_path or UNSAVED_BLEND
     unsaved = False
     if heartbeat.path:
         entity = heartbeat.path
     elif heartbeat.inner:
-        entity = blend_path + os.sep + heartbeat.inner
+        entity = base + os.sep + heartbeat.inner
         unsaved = True
     else:
-        entity = blend_path
+        entity = base
+        unsaved = not blend_path
     return {
         "entity": entity,
         "type": "file",
@@ -93,7 +96,7 @@ def resolve(heartbeat, blend_path):
         "lines": heartbeat.lines,
         "is_write": heartbeat.is_write,
         "is_unsaved_entity": unsaved,
-        "alternate_project": project_for(blend_path),
+        "alternate_project": project_for(blend_path) if blend_path else None,
         "time": heartbeat.time,
     }
 
@@ -114,7 +117,24 @@ class Tracker:
         self.active_since_save = False
 
     def file_loaded(self, blend_path):
+        self.flush_unsaved()
         self.reset(blend_path)
+
+    def adopt(self, blend_path):
+        if self.blend_path or not blend_path:
+            return
+        self.blend_path = blend_path
+        batch, self.pending = self.pending, []
+        if batch:
+            self.sink([resolve(h, blend_path) for h in batch])
+
+    def close(self):
+        self.flush_unsaved()
+
+    def flush_unsaved(self):
+        batch, self.pending = self.pending, []
+        if batch:
+            self.sink([resolve(h, "") for h in batch])
 
     def touch(self):
         self.active_since_save = True
@@ -167,6 +187,9 @@ class Tracker:
     def _emit(self, heartbeats):
         if not self.blend_path:
             self.pending.extend(heartbeats)
-            del self.pending[:-MAX_PENDING]
+            overflow = len(self.pending) - MAX_PENDING
+            if overflow > 0:
+                oldest, self.pending = self.pending[:overflow], self.pending[overflow:]
+                self.sink([resolve(h, "") for h in oldest])
             return
         self.sink([resolve(h, self.blend_path) for h in heartbeats])
